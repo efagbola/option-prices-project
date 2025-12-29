@@ -15,3 +15,10 @@ print("Example date:", example_date)
 print("Example area:", example_area)
 print("Strikes:", curve[0])
 print("Prices:", curve[1])
+
+from method_main import run_method as run_main
+from method_parametric_normal import run_method as run_param_normal
+
+if __name__ == "__main__":
+    run_main()
+    run_param_normal()
