@@ -1,47 +1,108 @@
 ## Repository Structure and File Description
 
-This repository implements and compares multiple methods to extract option-implied moments from option price data. Each script corresponds to one methodological approach or a supporting task.
+This project estimates and compares option-implied moments of the inflation distribution using cap and floor prices.  
+The focus is on methodology, replication, and comparison across different approaches.
 
-### Configuration and Utilities
-- `config.py`  
-  Defines data and output paths used consistently across all scripts.
+The supervisor inspects:
+1. Code files
+2. Output CSV files
+3. Plots and results
 
-- `utils/price_curves.py`  
-  Helper functions to load raw option data and construct option price curves across strikes for each date and area.
+---
 
-### Core Method Implementations
-- `method_main.py`  
-  Nonparametric implied risk-neutral density method based on Breeden–Litzenberger (1978).  
-  Option prices are smoothed across strikes, differentiated to recover the implied density, and moments are computed via numerical integration.  
-  Output: `moments_main.csv`.
+## Data
 
-- `method_parametric_normal.py`  
-  Parametric approach assuming a Normal implied distribution.  
-  Distribution parameters are estimated per date, and moments are computed analytically.  
-  Output: `moments_parametric_normal.csv`.
+The dataset consists of:
+- Inflation caps
+- Inflation floors
+- Inflation swaps (used for discounting and forward means)
 
-- `method_parametric_lognormal.py`  
-  Parametric approach assuming a Lognormal implied distribution.  
-  Parameters are estimated per date in log-space, with analytical formulas used for implied moments.  
-  Output: `moments_parametric_lognormal.csv`.
+Data are used to construct cross-sectional option price curves at each date.
 
-- `method_direct_moments_bkm.py`  
-  Direct moment extraction method inspired by Bakshi–Kapadia–Madan (BKM).  
-  Moments are computed directly from option prices without explicitly recovering the implied density.  
-  Output: direct moments CSV (see script for exact filename).
+All results are computed **date by date**.
 
-### Comparison and Execution
-- `plot_comparison.py`  
-  Loads moment estimates from all methods and produces time-series plots for mean and variance.  
-  Used to assess stability and systematic differences across methods.
+---
 
-- `run_all.py`  
-  Master script to run all estimation methods sequentially and generate outputs in a single execution.
+## Methods Implemented
 
-### Output
-- `output/`  
-  Contains CSV files with estimated moments and generated comparison plots.
+### 1. Nonparametric Implied Density (Breeden–Litzenberger)
 
-### Notes
-- All estimations are cross-sectional (per date).
-- The focus is on identification and stability of implied moments, not forecasting.
+- Smooth option price curve across strikes using splines
+- Recover implied risk-neutral density via second derivative
+- Compute moments via numerical integration
+
+**Output**
+- `moments_main.csv`
+
+---
+
+### 2. Parametric Normal Distribution
+
+- Assume normally distributed inflation
+- Estimate mean and variance from strikes
+- Compute moments analytically
+
+**Output**
+- `moments_parametric_normal.csv`
+
+---
+
+### 3. Parametric Lognormal Distribution
+
+- Assume lognormal distribution for inflation
+- Estimate parameters in log-space
+- Compute analytical moments
+
+**Output**
+- `moments_parametric_lognormal.csv`
+
+---
+
+### 4. Direct Moment Extraction (BKM-style)
+
+- No explicit density recovery
+- Use static replication of payoff moments
+- Moments obtained directly from option prices
+
+**Output**
+- `moments_direct_bkm.csv`
+
+---
+
+## Comparison
+
+Methods are compared using:
+- Time-series plots of implied **mean**
+- Time-series plots of implied **variance**
+- Level comparison (time-series averages)
+- Volatility comparison (standard deviation over time)
+- Diagnostic gap analysis across methods
+
+---
+
+## Repository Structure
+
+```text
+option-prices-project/
+│
+├── code/
+│   ├── config.py
+│   ├── run_all.py
+│   ├── plot_comparison.py
+│   ├── method_main.py
+│   ├── method_parametric_normal.py
+│   ├── method_parametric_lognormal.py
+│   ├── method_direct_bkm.py
+│   └── utils/
+│       └── price_curves.py
+│
+├── output/
+│   ├── moments_main.csv
+│   ├── moments_parametric_normal.csv
+│   ├── moments_parametric_lognormal.csv
+│   ├── moments_direct_bkm.csv
+│   ├── mean_comparison_EU.png
+│   └── variance_comparison_EU.png
+│
+└── README.md
+
