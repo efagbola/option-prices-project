@@ -2,17 +2,23 @@ import numpy as np
 import pandas as pd
 
 
-def load_data(data_path):
+def load_data(data_path: str):
     """
-    Load caps, floors, and swaps data.
+    Load caps, floors, and swaps data (1Y).
+    Dates are cast to string for consistent matching across scripts.
     """
     caps = pd.read_csv(data_path + "cleaned_caps_quotes_1y.csv")
     floors = pd.read_csv(data_path + "cleaned_floors_quotes_1y.csv")
     swaps = pd.read_csv(data_path + "cleaned_swaps_curves_1y.csv")
+
+    for df in (caps, floors, swaps):
+        if "date" in df.columns:
+            df["date"] = df["date"].astype(str)
+
     return caps, floors, swaps
 
 
-def get_available_dates(caps, floors):
+def get_available_dates(caps: pd.DataFrame, floors: pd.DataFrame):
     """
     Return sorted list of dates common to caps and floors.
     """
@@ -21,55 +27,48 @@ def get_available_dates(caps, floors):
     return sorted(dates_caps.intersection(dates_floors))
 
 
-def normalize_strikes(k: np.ndarray) -> np.ndarray:
-    """
-    Normalize strike units to decimals.
-    Heuristic: if median strike > 1, interpret as bps-like (e.g., 300 -> 0.03).
-    """
-    k = np.asarray(k, dtype=float)
-    k = k[np.isfinite(k)]
-    if k.size == 0:
-        return k
-
-    if np.nanmedian(k) > 1.0:
-        k = k / 10000.0
-
-    return k
-
-
 def build_price_curve(caps, floors, swaps, date, area, instrument="cap", min_points=6):
     """
-    Build a *single-type* option price curve for one date and one area.
+    Build a single-instrument option price curve for one date and one area.
 
-    instrument: "cap" or "floor"
+    Uses strike column 'K' (index ratio strike = 1 + inflation), not 'k' (inflation rate).
+
+    Args:
+        caps, floors, swaps: loaded dataframes (swaps kept for consistent interface)
+        date: date key (string or convertible to string)
+        area: area code (e.g., "EU")
+        instrument: "cap" or "floor"
+        min_points: minimum number of strikes required
 
     Returns:
-        (k, price_per_1) as numpy arrays, sorted by k, with duplicated strikes averaged.
+        (K, price_per_1) as numpy arrays, sorted by K, with duplicate strikes averaged.
         Returns None if insufficient data.
     """
     if instrument not in {"cap", "floor"}:
         raise ValueError("instrument must be 'cap' or 'floor'")
 
+    date = str(date)
     df = caps if instrument == "cap" else floors
     df_d = df[(df["date"] == date) & (df["area"] == area)]
     if df_d.empty:
         return None
 
-    k = normalize_strikes(df_d["k"].to_numpy())
-    p = np.asarray(df_d["price_per_1"].to_numpy(), dtype=float)
+    # Use index-ratio strikes
+    K = np.asarray(df_d["K"], dtype=float)
+    P = np.asarray(df_d["price_per_1"], dtype=float)
 
-    mask = np.isfinite(k) & np.isfinite(p)
-    k = k[mask]
-    p = p[mask]
+    mask = np.isfinite(K) & np.isfinite(P)
+    K = K[mask]
+    P = P[mask]
 
-    if k.size < min_points:
+    if K.size < min_points:
         return None
 
     # Deduplicate strikes by averaging prices
-    tmp = pd.DataFrame({"k": k, "p": p}).groupby("k", as_index=False).mean()
-    tmp = tmp.sort_values("k")
+    tmp = pd.DataFrame({"K": K, "P": P}).groupby("K", as_index=False).mean()
+    tmp = tmp.sort_values("K")
 
     if len(tmp) < min_points:
         return None
 
-    return tmp["k"].to_numpy(), tmp["p"].to_numpy()
+    return tmp["K"].to_numpy(), tmp["P"].to_numpy()

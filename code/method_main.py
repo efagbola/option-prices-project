@@ -7,16 +7,17 @@ from config import DATA_PATH, OUTPUT_PATH
 from utils.price_curves import load_data, get_available_dates, build_price_curve
 
 
+# -----------------------------
+# Core BL helpers
+# -----------------------------
 def smooth_price_curve(strikes, prices, smooth_factor=None):
     """
-    Smooth the option price curve across strikes.
-    If smooth_factor is None, choose a scale-aware default based on price dispersion.
+    Smooth the option price curve across strikes with a scale-aware smoothing factor.
     """
     strikes = np.asarray(strikes, dtype=float)
     prices = np.asarray(prices, dtype=float)
 
     if smooth_factor is None:
-        # scale-aware heuristic regularization
         smooth_factor = 1e-3 * len(strikes) * float(np.nanvar(prices))
 
     return UnivariateSpline(strikes, prices, s=float(smooth_factor))
@@ -32,48 +33,125 @@ def implied_pdf_from_prices(spline, grid):
     second_derivative = spline.derivative(n=2)(grid)
     pdf = np.asarray(second_derivative, dtype=float)
     pdf[~np.isfinite(pdf)] = 0.0
-
-    # enforce nonnegativity
     pdf = np.maximum(pdf, 0.0)
 
     area = np.trapezoid(pdf, grid)
     if area <= 0 or not np.isfinite(area):
         return None
 
-    pdf /= area
-    return pdf
+    return pdf / area
 
 
 def compute_moments(grid, pdf):
     """
-    Compute mean, variance, skewness, kurtosis from a discrete pdf on a grid.
-    Kurtosis here is non-excess kurtosis (Normal = 3).
+    Compute mean, variance, skewness, kurtosis from discrete pdf.
+    Kurtosis is non-excess (Normal=3).
     """
     grid = np.asarray(grid, dtype=float)
     pdf = np.asarray(pdf, dtype=float)
 
     mean = float(np.trapezoid(grid * pdf, grid))
     var = float(np.trapezoid(((grid - mean) ** 2) * pdf, grid))
-
-    # Guard against near-zero variance
     if not np.isfinite(var) or var <= 1e-14:
         return None
 
     std = np.sqrt(var)
-
     skew = float(np.trapezoid((((grid - mean) / std) ** 3) * pdf, grid))
     kurt = float(np.trapezoid((((grid - mean) / std) ** 4) * pdf, grid))
 
     return mean, var, skew, kurt
 
 
-def run_method(instrument="cap", grid_n=400):
+# -----------------------------
+# Two-sided curve construction
+# -----------------------------
+def build_two_sided_price_curve(caps, floors, swaps, date, area, min_points_each_side=3):
     """
-    Run BL implied density and implied moments.
+    Construct a two-sided option curve around the ATM forward strike (K_star):
 
-    instrument:
-        "cap"  -> use cap quotes only (recommended default)
-        "floor"-> use floor quotes only (robustness check)
+      - Calls side: caps with K >= K_star
+      - Puts side:  floors with K <= K_star
+
+    Then we convert puts into "call-equivalent" prices using put-call parity
+    under the simple X=I_T/I_0 payoff convention:
+
+        Call(K) - Put(K) = (E[X] - K) * B  (undiscounted forward times discount)
+    => Call_equiv_from_put(K) = Put(K) + B*(K_star - K)
+
+    where K_star is the swap-implied forward mean of X, and B is the discount factor.
+
+    Returns:
+        (K_all, C_all) merged, deduped, sorted
+        or None if insufficient data.
+    """
+    swap_row = swaps[(swaps["date"] == str(date)) & (swaps["area"] == area)]
+    if swap_row.empty:
+        return None
+    swap_row = swap_row.iloc[0]
+
+    B = float(swap_row["B"])
+    K_star = float(swap_row["K_star"])
+
+    if not (np.isfinite(B) and B > 0 and np.isfinite(K_star) and K_star > 0):
+        return None
+
+    cap_curve = build_price_curve(caps, floors, swaps, date, area, instrument="cap", min_points=1)
+    floor_curve = build_price_curve(caps, floors, swaps, date, area, instrument="floor", min_points=1)
+    if cap_curve is None or floor_curve is None:
+        return None
+
+    Kc, Pc = cap_curve
+    Kp, Pp = floor_curve
+
+    # OTM selection around K_star
+    calls_mask = (Kc >= K_star) & np.isfinite(Pc) & (Pc >= -1e-12)
+    puts_mask = (Kp <= K_star) & np.isfinite(Pp) & (Pp >= -1e-12)
+
+    K_calls = Kc[calls_mask]
+    C_calls = Pc[calls_mask]  # cap PV acts like call PV
+
+    K_puts = Kp[puts_mask]
+    P_puts = Pp[puts_mask]
+
+    if len(K_calls) < min_points_each_side or len(K_puts) < min_points_each_side:
+        return None
+
+    # Convert puts into call-equivalent prices via parity:
+    # C(K) = P(K) + B*(K_star - K)
+    C_from_puts = P_puts + B * (K_star - K_puts)
+
+    # Combine
+    K_all = np.concatenate([K_puts, K_calls])
+    C_all = np.concatenate([C_from_puts, C_calls])
+
+    # Clean + dedup + sort
+    mask = np.isfinite(K_all) & np.isfinite(C_all)
+    K_all = K_all[mask]
+    C_all = C_all[mask]
+
+    if K_all.size < 6:
+        return None
+
+    tmp = pd.DataFrame({"K": K_all, "C": C_all}).groupby("K", as_index=False)["C"].mean()
+    tmp = tmp.sort_values("K")
+
+    if len(tmp) < 6:
+        return None
+
+    return tmp["K"].to_numpy(), tmp["C"].to_numpy(), B, K_star
+
+
+# -----------------------------
+# Runner
+# -----------------------------
+def run_method(grid_n=400, min_points_each_side=3):
+    """
+    Two-sided BL implied density:
+      - Builds a two-sided "call-equivalent" surface using caps+floors and swap parity
+      - Applies BL second-derivative to that curve
+      - Computes implied moments
+
+    This is less "cap-only" and more comparable to BKM/lognormal, because it uses BOTH sides.
     """
     caps, floors, swaps = load_data(DATA_PATH)
     dates = get_available_dates(caps, floors)
@@ -83,19 +161,15 @@ def run_method(instrument="cap", grid_n=400):
 
     for date in dates:
         for area in areas:
-            curve = build_price_curve(caps, floors, swaps, date, area, instrument=instrument)
+            curve = build_two_sided_price_curve(
+                caps, floors, swaps, date, area,
+                min_points_each_side=min_points_each_side
+            )
             if curve is None:
                 continue
 
-            strikes, prices = curve
+            strikes, prices, B, K_star = curve
 
-            # basic guards
-            if len(strikes) < 6:
-                continue
-            if not (np.isfinite(strikes).all() and np.isfinite(prices).all()):
-                continue
-
-            # grid over observed strike range (avoid extrapolation)
             kmin, kmax = float(np.min(strikes)), float(np.max(strikes))
             if not np.isfinite(kmin) or not np.isfinite(kmax) or (kmax - kmin) <= 1e-10:
                 continue
@@ -106,8 +180,6 @@ def run_method(instrument="cap", grid_n=400):
             pdf = implied_pdf_from_prices(spline, grid)
             if pdf is None:
                 continue
-            if not np.isfinite(pdf).all():
-                continue
 
             moments = compute_moments(grid, pdf)
             if moments is None:
@@ -115,21 +187,35 @@ def run_method(instrument="cap", grid_n=400):
             mean, var, skew, kurt = moments
 
             results.append({
-                "date": date,
+                "date": str(date),
                 "area": area,
-                "instrument": instrument,
+                "instrument": "two_sided",
                 "mean": mean,
                 "variance": var,
                 "skewness": skew,
-                "kurtosis": kurt
+                "kurtosis": kurt,
+                "B": float(B),
+                "K_star": float(K_star),
+                "Kmin": float(kmin),
+                "Kmax": float(kmax),
+                "n_strikes": int(len(strikes)),
             })
 
-    df = pd.DataFrame(results).sort_values(["area", "date"])
+    df = pd.DataFrame(results)
     out_path = Path(OUTPUT_PATH) / "moments_main.csv"
+
+    if df.empty:
+        print("No results produced — insufficient two-sided strike coverage.")
+        df.to_csv(out_path, index=False)
+        print("Saved empty file:", str(out_path))
+        return
+
+    df = df.sort_values(["area", "date"])
     df.to_csv(out_path, index=False)
+
     print("Saved:", str(out_path))
     print("Rows:", len(df))
 
 
 if __name__ == "__main__":
-    run_method(instrument="cap")
+    run_method(grid_n=400, min_points_each_side=3)

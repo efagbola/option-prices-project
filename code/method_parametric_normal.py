@@ -17,24 +17,22 @@ def choose_grid(strikes, n=400):
     return np.linspace(kmin, kmax, int(n))
 
 
-def smooth_price_curve(strikes, prices, smooth_factor=None):
+def smooth_price_curve(strikes, prices, smooth_factor=0.0):
     """
-    Smooth prices with a scale-aware smoothing factor.
+    Spline fit of prices across strikes.
+
+    With very few strikes (often 4), smoothing can erase curvature and make the
+    BL second-derivative nearly zero. Default is exact interpolation (s=0).
     """
     strikes = np.asarray(strikes, dtype=float)
     prices = np.asarray(prices, dtype=float)
-
-    if smooth_factor is None:
-        # heuristic regularization proportional to dispersion
-        smooth_factor = 1e-3 * len(strikes) * float(np.nanvar(prices))
-
     return UnivariateSpline(strikes, prices, s=float(smooth_factor))
 
 
 def implied_pdf_from_prices(spline, grid):
     """
-    BL-style density proxy: pdf ∝ d²Price/dK² on the observed strike interval.
-    Negative mass is clipped (spline oscillations) and the pdf is renormalized.
+    BL-style density proxy: pdf(K) ∝ d²Price/dK² on the observed strike interval.
+    Clip negative values (spline artifacts) and renormalize on the grid.
     """
     grid = np.asarray(grid, dtype=float)
 
@@ -43,8 +41,8 @@ def implied_pdf_from_prices(spline, grid):
     pdf[~np.isfinite(pdf)] = 0.0
 
     pdf = np.maximum(pdf, 0.0)
-    area = np.trapezoid(pdf, grid)
-    if area <= 0 or not np.isfinite(area):
+    area = float(np.trapezoid(pdf, grid))
+    if (not np.isfinite(area)) or area <= 0.0:
         return None
 
     return pdf / area
@@ -52,8 +50,8 @@ def implied_pdf_from_prices(spline, grid):
 
 def fit_normal_to_pdf(grid, pdf):
     """
-    Fit Normal(mu, sigma) to a target pdf over a grid by least squares.
-    Uses moment initialization + bounded L-BFGS-B.
+    Fit Normal(mu, sigma) to a target pdf on a grid by least squares.
+    Uses moment initialization and bounded L-BFGS-B on (mu, log_sigma).
     """
     grid = np.asarray(grid, dtype=float)
     pdf = np.asarray(pdf, dtype=float)
@@ -70,11 +68,13 @@ def fit_normal_to_pdf(grid, pdf):
         sigma = float(np.exp(log_sigma))
 
         model_pdf = norm.pdf(grid, loc=mu, scale=sigma)
-        model_area = np.trapezoid(model_pdf, grid)
-        if model_area <= 0 or not np.isfinite(model_area):
-            return 1e12
 
-        model_pdf /= model_area
+        # normalize on the truncated grid
+        area = float(np.trapezoid(model_pdf, grid))
+        if (not np.isfinite(area)) or area <= 0.0:
+            return 1e12
+        model_pdf = model_pdf / area
+
         err = pdf - model_pdf
         return float(np.mean(err * err))
 
@@ -83,32 +83,39 @@ def fit_normal_to_pdf(grid, pdf):
         x0=np.array([mu0, np.log(sigma0)]),
         method="L-BFGS-B",
         bounds=[
-            (gmin, gmax),                      # mu within strike range
-            (np.log(1e-6), np.log(2.0*grange))  # sigma in a generous range
+            (gmin, gmax),                     # mu within observed strike range
+            (np.log(1e-6), np.log(2.0*grange)) # sigma bounded away from 0
         ],
-        options={"maxiter": 500}
+        options={"maxiter": 500},
     )
 
     if not res.success:
-        # still can accept if parameters are finite; but safer to skip
-        pass
+        return None
 
     mu_hat, log_sigma_hat = res.x
     sigma_hat = float(np.exp(log_sigma_hat))
 
-    if not (np.isfinite(mu_hat) and np.isfinite(sigma_hat) and sigma_hat > 0):
+    if not (np.isfinite(mu_hat) and np.isfinite(sigma_hat) and sigma_hat > 0.0):
         return None
 
     return float(mu_hat), float(sigma_hat)
 
 
-def run_method(instrument="cap", min_points=6, grid_n=400):
+def run_method(
+    instrument="cap",
+    min_points=4,
+    grid_n=400,
+    smooth_factor=0.0,
+    edge_mass_threshold=0.7,
+):
     """
-    Parametric Normal: recover a BL-style density proxy from option prices,
-    then fit a Normal distribution to that density.
+    Parametric Normal (diagnostic benchmark):
+      1) recover a BL-style density proxy from option prices (single instrument curve)
+      2) fit a Normal distribution to that density on the observed strike interval
 
-    instrument:
-        "cap"  (recommended) or "floor" for robustness checks
+    Notes:
+      - Strikes here are K = index-ratio strikes (1 + inflation).
+      - With sparse strikes, the BL proxy can be boundary-dominated; we optionally filter those cases.
     """
     caps, floors, swaps = load_data(DATA_PATH)
     dates = get_available_dates(caps, floors)
@@ -121,26 +128,36 @@ def run_method(instrument="cap", min_points=6, grid_n=400):
             curve = build_price_curve(
                 caps, floors, swaps, date, area,
                 instrument=instrument,
-                min_points=min_points
+                min_points=min_points,
             )
             if curve is None:
                 continue
 
             strikes, prices = curve
 
-            # extra guards (build_price_curve already does most cleaning)
             if len(strikes) < min_points:
                 continue
             if not (np.isfinite(strikes).all() and np.isfinite(prices).all()):
+                continue
+            if np.nanstd(prices) < 1e-12:
+                continue
+            if np.nanmin(prices) < -1e-12:
                 continue
 
             grid = choose_grid(strikes, n=grid_n)
             if grid is None:
                 continue
 
-            spline = smooth_price_curve(strikes, prices, smooth_factor=None)
+            spline = smooth_price_curve(strikes, prices, smooth_factor=smooth_factor)
             pdf = implied_pdf_from_prices(spline, grid)
             if pdf is None or (not np.isfinite(pdf).all()):
+                continue
+
+            # filter out densities dominated by boundary mass (common with sparse strikes)
+            edge_mass = float(
+                np.trapezoid(pdf[:10], grid[:10]) + np.trapezoid(pdf[-10:], grid[-10:])
+            )
+            if (not np.isfinite(edge_mass)) or edge_mass > float(edge_mass_threshold):
                 continue
 
             fit = fit_normal_to_pdf(grid, pdf)
@@ -148,18 +165,17 @@ def run_method(instrument="cap", min_points=6, grid_n=400):
                 continue
 
             mu_hat, sigma_hat = fit
-
             mean = mu_hat
             variance = sigma_hat ** 2
 
-            # Optional sanity caps to prevent plot poisoning
-            if not (-0.10 < mean < 0.20):
+            # VERY loose K-space sanity caps (prevents plot poisoning without filtering everything)
+            if not (0.5 < mean < 2.0):
                 continue
             if not (0.0 <= variance < 1.0):
                 continue
 
             results.append({
-                "date": date,
+                "date": str(date),
                 "area": area,
                 "instrument": instrument,
                 "mu_hat": mu_hat,
@@ -167,11 +183,19 @@ def run_method(instrument="cap", min_points=6, grid_n=400):
                 "mean": mean,
                 "variance": variance,
                 "skewness": 0.0,
-                "kurtosis": 3.0
+                "kurtosis": 3.0,  # non-excess
             })
 
-    df = pd.DataFrame(results).sort_values(["area", "date"])
+    df = pd.DataFrame(results)
     out_path = Path(OUTPUT_PATH) / "moments_parametric_normal.csv"
+
+    if df.empty:
+        print("No results produced — Normal fit returned no valid rows.")
+        df.to_csv(out_path, index=False)
+        print("Saved empty file:", str(out_path))
+        return
+
+    df = df.sort_values(["area", "date"])
     df.to_csv(out_path, index=False)
 
     print("Saved:", str(out_path))
