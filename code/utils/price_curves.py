@@ -10,10 +10,16 @@ def load_data(data_path: str):
     caps = pd.read_csv(data_path + "cleaned_caps_quotes_1y.csv")
     floors = pd.read_csv(data_path + "cleaned_floors_quotes_1y.csv")
     swaps = pd.read_csv(data_path + "cleaned_swaps_curves_1y.csv")
+    PRICE_SCALE = 100.0
 
     for df in (caps, floors, swaps):
         if "date" in df.columns:
             df["date"] = df["date"].astype(str)
+
+
+    for df in (caps, floors):
+        if "price_per_1" in df.columns:
+            df["price_per_1"] = pd.to_numeric(df["price_per_1"], errors="coerce") / PRICE_SCALE
 
     return caps, floors, swaps
 

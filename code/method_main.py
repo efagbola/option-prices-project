@@ -6,6 +6,35 @@ from scipy.interpolate import UnivariateSpline
 from config import DATA_PATH, OUTPUT_PATH
 from utils.price_curves import load_data, get_available_dates, build_price_curve
 
+# -----------------------------
+# Quality gates (tuneable)
+# -----------------------------
+PARITY_EPS = 5e-4   # PV-per-1 units (after your /100 scaling)
+MONO_TOL   = 1e-10  # monotonicity tolerance
+CONV_TOL   = 1e-10  # convexity tolerance
+
+
+def is_monotone_decreasing(y, tol=MONO_TOL) -> bool:
+    y = np.asarray(y, dtype=float)
+    dy = np.diff(y)
+    return bool(np.all(dy <= tol))
+
+
+def is_convex(y, x, tol=CONV_TOL) -> bool:
+    """
+    Discrete convexity check:
+      call curve must be convex in strike => slopes are non-decreasing.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(x) < 3:
+        return False
+    dx = np.diff(x)
+    if np.any(dx <= 0):
+        return False
+    slopes = np.diff(y) / dx
+    return bool(np.all(np.diff(slopes) >= -tol))
+
 
 # -----------------------------
 # Core BL helpers
@@ -35,7 +64,7 @@ def implied_pdf_from_prices(spline, grid):
     pdf[~np.isfinite(pdf)] = 0.0
     pdf = np.maximum(pdf, 0.0)
 
-    area = np.trapezoid(pdf, grid)
+    area = np.trapz(pdf, grid)
     if area <= 0 or not np.isfinite(area):
         return None
 
@@ -50,14 +79,14 @@ def compute_moments(grid, pdf):
     grid = np.asarray(grid, dtype=float)
     pdf = np.asarray(pdf, dtype=float)
 
-    mean = float(np.trapezoid(grid * pdf, grid))
-    var = float(np.trapezoid(((grid - mean) ** 2) * pdf, grid))
+    mean = float(np.trapz(grid * pdf, grid))
+    var = float(np.trapz(((grid - mean) ** 2) * pdf, grid))
     if not np.isfinite(var) or var <= 1e-14:
         return None
 
     std = np.sqrt(var)
-    skew = float(np.trapezoid((((grid - mean) / std) ** 3) * pdf, grid))
-    kurt = float(np.trapezoid((((grid - mean) / std) ** 4) * pdf, grid))
+    skew = float(np.trapz((((grid - mean) / std) ** 3) * pdf, grid))
+    kurt = float(np.trapz((((grid - mean) / std) ** 4) * pdf, grid))
 
     return mean, var, skew, kurt
 
@@ -103,6 +132,17 @@ def build_two_sided_price_curve(caps, floors, swaps, date, area, min_points_each
     Kc, Pc = cap_curve
     Kp, Pp = floor_curve
 
+    # Parity consistency check on overlapping strikes (caps and floors share K grid)
+    cap_df = pd.DataFrame({"K": Kc, "C": Pc})
+    put_df = pd.DataFrame({"K": Kp, "P": Pp})
+    over = cap_df.merge(put_df, on="K", how="inner")
+
+    if len(over) >= 2:
+        resid = (over["C"] - over["P"]) - (B * (K_star - over["K"]))
+        med_abs = float(np.nanmedian(np.abs(resid)))
+        if not np.isfinite(med_abs) or med_abs > PARITY_EPS:
+            return None
+
     # OTM selection around K_star
     calls_mask = (Kc >= K_star) & np.isfinite(Pc) & (Pc >= -1e-12)
     puts_mask = (Kp <= K_star) & np.isfinite(Pp) & (Pp >= -1e-12)
@@ -138,7 +178,16 @@ def build_two_sided_price_curve(caps, floors, swaps, date, area, min_points_each
     if len(tmp) < 6:
         return None
 
-    return tmp["K"].to_numpy(), tmp["C"].to_numpy(), B, K_star
+    K_sorted = tmp["K"].to_numpy(dtype=float)
+    C_sorted = tmp["C"].to_numpy(dtype=float)
+
+    # No-arbitrage shape checks for a call curve
+    if not is_monotone_decreasing(C_sorted):
+        return None
+    if not is_convex(C_sorted, K_sorted):
+        return None
+
+    return K_sorted, C_sorted, B, K_star
 
 
 # -----------------------------
