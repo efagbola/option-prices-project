@@ -1,14 +1,17 @@
 import pandas as pd
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # non-GUI backend: always writes PNGs, never blocks on plt.show()
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from config import OUTPUT_PATH, DATA_PATH  # <-- make sure DATA_PATH exists in config
+from config import OUTPUT_PATH, DATA_PATH
 
 # =======================
 # User settings
 # =======================
 AREA = "EU"          # "EU" or "US"
-SHOW_PLOTS = True    # set False if running headless
+SHOW_PLOTS = False   # keep False for batch runs; True only if you want interactive windows
 
 out_dir = Path(OUTPUT_PATH)
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -177,6 +180,46 @@ if SHOW_PLOTS:
     plt.show()
 else:
     plt.close(fig)
+
+# =======================
+# VARIANCE DIFFERENCE PLOTS vs BKM
+# =======================
+fig, ax = plt.subplots(figsize=(10, 4))
+
+# Use log-differences (more stable) if all variances are positive; else fall back to level differences
+v_bkm = pd.to_numeric(df["var_bkm"], errors="coerce")
+
+def safe_logdiff(v_other, v_ref):
+    v_other = pd.to_numeric(v_other, errors="coerce")
+    ok = (v_other > 0) & (v_ref > 0)
+    out = pd.Series(index=v_ref.index, dtype=float)
+    out.loc[ok] = np.log(v_other.loc[ok]) - np.log(v_ref.loc[ok])
+    return out
+
+use_log = bool(((pd.to_numeric(df["var_bl"], errors="coerce") > 0) &
+                (pd.to_numeric(df["var_logn"], errors="coerce") > 0) &
+                (pd.to_numeric(df["var_norm"], errors="coerce") > 0) &
+                (v_bkm > 0)).all())
+
+if use_log:
+    ax.plot(df["date"], 10000 * safe_logdiff(df["var_bl"], v_bkm),   label="log(BL var) − log(BKM var)")
+    ax.plot(df["date"], 10000 * safe_logdiff(df["var_logn"], v_bkm), label="log(Lognormal var) − log(BKM var)")
+    ax.plot(df["date"], 10000 * safe_logdiff(df["var_norm"], v_bkm), label="log(Normal var) − log(BKM var)")
+    ax.set_ylabel("Difference (bps of log-var)")
+else:
+    ax.plot(df["date"], df["var_bl"]   - df["var_bkm"], label="BL var − BKM var")
+    ax.plot(df["date"], df["var_logn"] - df["var_bkm"], label="Lognormal var − BKM var")
+    ax.plot(df["date"], df["var_norm"] - df["var_bkm"], label="Normal var − BKM var")
+    ax.set_ylabel("Difference (level)")
+
+ax.axhline(0.0, linewidth=1)
+ax.set_title(f"Variance Differences vs BKM ({AREA}) — intersection sample")
+ax.grid(True, alpha=0.25)
+ax.legend()
+
+fig.tight_layout()
+fig.savefig(out_dir / f"variance_diff_vs_bkm_{AREA}.png", dpi=200)
+plt.close(fig)
 
 # =======================
 # DIFFERENCE PLOTS vs BKM
