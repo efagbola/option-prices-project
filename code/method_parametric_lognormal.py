@@ -7,6 +7,21 @@ from scipy.stats import norm
 from config import DATA_PATH, OUTPUT_PATH
 from utils.price_curves import load_data, get_available_dates, build_price_curve
 
+# -----------------------------
+# Quality gates (tuneable)
+# -----------------------------
+PARITY_EPS = 5e-4   # PV-per-1 units (after /100 scaling in load_data)
+MONO_TOL   = 1e-10  # monotonicity tolerance
+
+
+def is_monotone_decreasing(y, tol=MONO_TOL) -> bool:
+    y = np.asarray(y, dtype=float)
+    return bool(np.all(np.diff(y) <= tol))
+
+
+def is_monotone_increasing(y, tol=MONO_TOL) -> bool:
+    y = np.asarray(y, dtype=float)
+    return bool(np.all(np.diff(y) >= -tol))
 
 # -----------------------------
 # Swap helper
@@ -65,7 +80,7 @@ def calibrate_lognormal(
     B: float,
     K_star: float,
     sigma_max: float = 0.30,
-    lambda_anchor: float = 2000.0,
+    lambda_anchor: float = 1.0,
 ):
     """
     Calibrate (mu, sigma) to cap/floor prices with stabilization:
@@ -80,6 +95,15 @@ def calibrate_lognormal(
     P_calls = np.asarray(P_calls, dtype=float)
     K_puts = np.asarray(K_puts, dtype=float)
     P_puts = np.asarray(P_puts, dtype=float)
+
+    # Guard: with correct scaling, typical PVs are ~0.001–0.02 (not ~0.1–1.0)
+    allP = np.concatenate([P_calls, P_puts]) if (P_calls.size + P_puts.size) else np.array([], dtype=float)
+    medP = float(np.nanmedian(allP)) if allP.size else np.nan
+    if np.isfinite(medP) and medP > 0.2:
+        raise ValueError(
+            "Option prices look unscaled (median PV > 0.2). "
+            "Expected PV per 1 notional (caps/floors divided by 100 in load_data)."
+        )
 
     if not (np.isfinite(B) and B > 0 and np.isfinite(K_star) and K_star > 0):
         return None
@@ -109,21 +133,24 @@ def calibrate_lognormal(
 
         if K_calls.size:
             model_calls = B * lognormal_call_undisc(K_calls, mu, sigma)
-            errs.append(model_calls - P_calls)
+            denom = np.maximum(P_calls, 1e-6)
+            errs.append((model_calls - P_calls) / denom)
 
         if K_puts.size:
             model_puts = B * lognormal_put_undisc(K_puts, mu, sigma)
-            errs.append(model_puts - P_puts)
+            denom = np.maximum(P_puts, 1e-6)
+            errs.append((model_puts - P_puts) / denom)
 
         if not errs:
-            return 1e12
+            return np.inf
 
         err = np.concatenate(errs)
         mse = float(np.mean(err * err))
 
-        # anchor mean to swap-implied forward K_star
-        mean_model = float(np.exp(mu + 0.5 * sigma**2))
-        penalty = float(lambda_anchor) * (mean_model - float(K_star))**2
+        # Scale-free mean anchor: penalize relative deviation of E[X] from K_star
+        mean_model = float(np.exp(mu + 0.5 * sigma ** 2))
+        rel_dev = (mean_model - float(K_star)) / float(K_star)
+        penalty = float(lambda_anchor) * float(rel_dev * rel_dev)
 
         return mse + penalty
 
@@ -163,7 +190,7 @@ def calibrate_lognormal(
 def run_method(
     min_points_each_side: int = 3,
     sigma_max: float = 0.30,
-    lambda_anchor: float = 2000.0,
+    lambda_anchor: float = 1.0,
 ):
     """
     True implied Lognormal (stabilized calibration):
@@ -196,6 +223,24 @@ def run_method(
 
             Kc, Pc = cap_curve
             Kp, Pp = floor_curve
+
+            # Basic no-arbitrage shape checks on raw PV curves
+            # - calls should be non-increasing in strike
+            # - puts should be non-decreasing in strike
+            if not is_monotone_decreasing(Pc):
+                continue
+            if not is_monotone_increasing(Pp):
+                continue
+
+            # Parity consistency check on overlapping strikes
+            cap_df = pd.DataFrame({"K": Kc, "C": Pc})
+            put_df = pd.DataFrame({"K": Kp, "P": Pp})
+            over = cap_df.merge(put_df, on="K", how="inner")
+            if len(over) >= 2:
+                resid = (over["C"] - over["P"]) - (B * (K_star - over["K"]))
+                med_abs = float(np.nanmedian(np.abs(resid.to_numpy(dtype=float))))
+                if not np.isfinite(med_abs) or med_abs > PARITY_EPS:
+                    continue
 
             # OTM sets around K_star (classic)
             calls_mask = (Kc >= K_star) & np.isfinite(Kc) & (Kc > 0) & np.isfinite(Pc) & (Pc >= -1e-12)
@@ -256,4 +301,5 @@ def run_method(
 
 
 if __name__ == "__main__":
-    run_method(min_points_each_side=3, sigma_max=0.30, lambda_anchor=2000.0)
+    run_method(min_points_each_side=3, sigma_max=0.30, lambda_anchor=1.0)
+
