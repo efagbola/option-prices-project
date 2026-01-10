@@ -5,6 +5,23 @@ from pathlib import Path
 from config import DATA_PATH, OUTPUT_PATH
 from utils.price_curves import load_data, get_available_dates
 
+# -----------------------------
+# Quality gates (tuneable)
+# -----------------------------
+PARITY_EPS = 5e-4   # PV-per-1 units (after your /100 scaling in load_data)
+MONO_TOL   = 1e-10  # monotonicity tolerance
+
+
+def is_monotone_increasing(y, tol=MONO_TOL) -> bool:
+    y = np.asarray(y, dtype=float)
+    dy = np.diff(y)
+    return bool(np.all(dy >= -tol))
+
+
+def is_monotone_decreasing(y, tol=MONO_TOL) -> bool:
+    y = np.asarray(y, dtype=float)
+    dy = np.diff(y)
+    return bool(np.all(dy <= tol))
 
 # -----------------------------
 # Swap helper
@@ -40,11 +57,21 @@ def clean_option_df(df: pd.DataFrame, strike_col="K"):
 
 def undiscount_prices(df: pd.DataFrame, B: float):
     """
-    If price_per_1 is PV and B is the discount factor:
+    If price_per_1 is PV per 1 notional and B is the discount factor:
         undiscounted expected payoff = PV / B
     """
     out = df.copy()
-    out["undisc"] = out["price_per_1"].astype(float) / float(B)
+
+    # Guard: with correct scaling, typical PVs here are ~0.001 to 0.02 (not ~0.1 to 1.0)
+    med = float(pd.to_numeric(out["price_per_1"], errors="coerce").median())
+    if np.isfinite(med) and med > 0.2:
+        raise ValueError(
+            "Option prices look unscaled (median price_per_1 > 0.2). "
+            "Expected PV per 1 notional (caps/floors divided by 100 in load_data)."
+        )
+
+    out["undisc"] = pd.to_numeric(out["price_per_1"], errors="coerce") / float(B)
+    out = out.dropna(subset=["undisc"])
     return out
 
 
@@ -53,7 +80,7 @@ def trapz_integral(x, y):
     y = np.asarray(y, dtype=float)
     if x.size < 2:
         return 0.0
-    return float(np.trapezoid(y, x))
+    return float(np.trapz(y, x))
 
 
 # -----------------------------
@@ -105,12 +132,12 @@ def add_tail_point_calls(calls: pd.DataFrame, K0: float, strike_col="K", tail_fr
     return out
 
 
-def winsorize_payoffs(df: pd.DataFrame, q=0.98):
+def winsorize_payoffs(df: pd.DataFrame, q=None):
     """
     Optional: winsorize extreme undiscounted payoffs to reduce noisy tail impact.
-    (Useful when data has occasional bad quotes.)
+    If q is None, no winsorization is applied.
     """
-    if df.empty:
+    if df.empty or q is None:
         return df
     cap = float(df["undisc"].quantile(q))
     out = df.copy()
@@ -179,7 +206,7 @@ def run_method(
     min_points_each_side=3,
     strike_col="K",
     tail_frac=0.60,
-    winsor_q=0.98,
+    winsor_q=None,
 ):
     """
     Tail-stabilized BKM-style direct moments.
@@ -219,6 +246,17 @@ def run_method(
             if caps_d.empty or floors_d.empty:
                 continue
 
+            # Parity consistency check on overlapping strikes
+            cap_df = caps_d[[strike_col, "price_per_1"]].rename(columns={"price_per_1": "C"})
+            put_df = floors_d[[strike_col, "price_per_1"]].rename(columns={"price_per_1": "P"})
+            over = cap_df.merge(put_df, on=strike_col, how="inner")
+
+            if len(over) >= 2:
+                resid = (over["C"] - over["P"]) - (B * (K0 - over[strike_col]))
+                med_abs = float(np.nanmedian(np.abs(resid.to_numpy(dtype=float))))
+                if not np.isfinite(med_abs) or med_abs > PARITY_EPS:
+                    continue
+
             caps_u = undiscount_prices(caps_d, B)
             floors_u = undiscount_prices(floors_d, B)
 
@@ -227,6 +265,13 @@ def run_method(
             calls = caps_u[caps_u[strike_col] >= K0][[strike_col, "undisc"]].sort_values(strike_col)
 
             if len(puts) < min_points_each_side or len(calls) < min_points_each_side:
+                continue
+            # No-arbitrage monotonicity for undiscounted OTM payoffs:
+            # - put (floor) expected payoff should be non-decreasing in strike
+            # - call (cap) expected payoff should be non-increasing in strike
+            if not is_monotone_increasing(puts["undisc"].to_numpy(dtype=float)):
+                continue
+            if not is_monotone_decreasing(calls["undisc"].to_numpy(dtype=float)):
                 continue
 
             # Winsorize payoffs (reduces impact of bad quotes)
@@ -286,4 +331,4 @@ def run_method(
 
 
 if __name__ == "__main__":
-    run_method(min_points_each_side=3, strike_col="K", tail_frac=0.60, winsor_q=0.98)
+    run_method(min_points_each_side=3, strike_col="K", tail_frac=0.60, winsor_q=None)
