@@ -37,12 +37,27 @@ def set_robust_ylim(ax, series_list, pad_frac=0.10, qlow=0.01, qhigh=0.99):
 
 def prep(df, mean_name, var_name):
     df = df.copy()
+
+    # Date normalization
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
-    df = df[df["area"] == AREA].copy()
-    df = df[["date", "area", "n", "mean", "variance"]].dropna(subset=["date"])
-    return df.rename(columns={"mean": mean_name, "variance": var_name})
 
+    # Ensure required keys exist
+    if "area" not in df.columns:
+        raise KeyError("Expected column 'area' in moments CSV, but it is missing.")
+
+    # Some outputs may not contain 'n' (tenor). Default to 1 for this project.
+    if "n" not in df.columns:
+        df["n"] = 1
+
+    # Filter to selected area
+    df = df[df["area"] == AREA].copy()
+
+    # Keep/rename columns
+    df = df[["date", "area", "n", "mean", "variance"]].dropna(subset=["date"])
+    df = df.rename(columns={"mean": mean_name, "variance": var_name})
+
+    return df
 
 # =======================
 # Load outputs

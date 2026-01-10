@@ -1,21 +1,24 @@
+# config.py
 import os
 from pathlib import Path
 
-# Chemin des données
-data_path = "https://raw.githubusercontent.com/efagbola/option-prices-project/refs/heads/main/code/Data/"
+# Base directory = .../option-prices-project
+BASE_DIR = Path(__file__).resolve().parent.parent  # code/.. -> project root
+CODE_DIR = BASE_DIR / "code"
 
-# Déterminer le chemin du dossier output
-def get_output_path():
-    # Chemin du dossier parent du dossier actuel
-    parent_dir = Path(__file__).parent.parent
-    output_dir = parent_dir / 'output'
-    
-    # Créer le dossier s'il n'existe pas
-    output_dir.mkdir(exist_ok=True)
-    
-    # Retourner le chemin absolu sous forme de chaîne avec un séparateur à la fin
-    return str(output_dir) + os.sep
+# -----------------------
+# Data location (local)
+# -----------------------
+# Expect cleaned CSVs to live in: code/Data/
+#   - cleaned_caps_quotes_1y.csv
+#   - cleaned_floors_quotes_1y.csv
+#   - cleaned_swaps_curves_1y.csv
+DATA_DIR = CODE_DIR / "Data"
+DATA_PATH = str(DATA_DIR) + os.sep
 
-# Définir les chemins globaux
-DATA_PATH = data_path
-OUTPUT_PATH = get_output_path()
+# -----------------------
+# Output location (local)
+# -----------------------
+OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_PATH = str(OUTPUT_DIR) + os.sep

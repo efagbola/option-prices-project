@@ -307,7 +307,7 @@ def run_method(
                 "skewness": skew,
                 "kurtosis": kurt,
                 "tail_frac": float(tail_frac),
-                "winsor_q": float(winsor_q),
+                "winsor_q": winsor_q,
                 "Kmin_used_put": float(puts[strike_col].min()),
                 "Kmax_used_call": float(calls[strike_col].max()),
                 "n_puts": int(len(puts)),
