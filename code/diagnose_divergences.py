@@ -35,14 +35,22 @@ def choose_grid(strikes, n=400):
 
 def implied_pdf_from_prices(spline, grid):
     grid = np.asarray(grid, dtype=float)
+
     second = spline.derivative(n=2)(grid)
-    pdf = np.asarray(second, dtype=float)
-    pdf[~np.isfinite(pdf)] = 0.0
-    pdf = np.maximum(pdf, 0.0)
+    raw = np.asarray(second, dtype=float)
+    raw[~np.isfinite(raw)] = 0.0
+
+    neg_mass = float(np.trapz(np.maximum(-raw, 0.0), grid))
+    pos_mass = float(np.trapz(np.maximum(raw, 0.0), grid))
+    neg_share = (neg_mass / max(neg_mass + pos_mass, 1e-18)) if np.isfinite(neg_mass + pos_mass) else np.nan
+
+    pdf = np.maximum(raw, 0.0)
     area = float(np.trapz(pdf, grid))
     if (not np.isfinite(area)) or area <= 0.0:
-        return None
-    return pdf / area
+        return None, np.nan
+
+    return pdf / area, neg_share
+
 
 
 def bl_edge_mass(grid, pdf, edge_n=10):
@@ -50,6 +58,74 @@ def bl_edge_mass(grid, pdf, edge_n=10):
     pdf = np.asarray(pdf, dtype=float)
     m = float(np.trapz(pdf[:edge_n], grid[:edge_n]) + np.trapz(pdf[-edge_n:], grid[-edge_n:]))
     return m
+
+def moments_from_pdf(grid, pdf):
+    """Compute mean and variance from a pdf defined on grid (assumed normalized)."""
+    grid = np.asarray(grid, float)
+    pdf = np.asarray(pdf, float)
+    m = float(np.trapz(grid * pdf, grid))
+    v = float(np.trapz(((grid - m) ** 2) * pdf, grid))
+    return m, v
+
+
+def restrict_pdf_to_interval(grid, pdf, a, b):
+    """
+    Restrict a pdf to [a,b] and renormalize.
+    Returns (grid_sub, pdf_sub) or (None, None) if invalid.
+    """
+    grid = np.asarray(grid, float)
+    pdf = np.asarray(pdf, float)
+
+    if not (np.isfinite(a) and np.isfinite(b) and b > a):
+        return None, None
+
+    mask = (grid >= a) & (grid <= b)
+    if mask.sum() < 10:
+        return None, None
+
+    g2 = grid[mask]
+    p2 = pdf[mask].copy()
+
+    area = float(np.trapz(p2, g2))
+    if (not np.isfinite(area)) or area <= 0:
+        return None, None
+
+    return g2, p2 / area
+
+
+def curve_sanity_metrics(K, C):
+    """
+    Basic no-arbitrage shape checks for call prices as function of strike:
+      - monotone decreasing: dC/dK <= 0
+      - convex: second differences >= 0
+    Returns a dict with counts and magnitudes.
+    """
+    K = np.asarray(K, float)
+    C = np.asarray(C, float)
+
+    # first differences
+    dK = np.diff(K)
+    dC = np.diff(C)
+    slope = dC / np.maximum(dK, 1e-12)
+
+    # monotonicity violations: slope > 0
+    mono_viol = slope[slope > 0]
+    mono_count = int(mono_viol.size)
+    mono_max = float(mono_viol.max()) if mono_count else 0.0
+
+    # convexity via second differences on C(K)
+    # Use discrete second derivative: (C[i+1] - 2C[i] + C[i-1]) / (avg dK)^2
+    ddC = C[2:] - 2 * C[1:-1] + C[:-2]
+    convex_viol = ddC[ddC < 0]
+    convex_count = int(convex_viol.size)
+    convex_min = float(convex_viol.min()) if convex_count else 0.0  # most negative
+
+    return {
+        "mono_viol_count": mono_count,
+        "mono_viol_max_slope": mono_max,
+        "convex_viol_count": convex_count,
+        "convex_viol_min_ddC": convex_min,
+    }
 
 
 def build_call_equivalent_curve(caps, floors, swaps, date, area):
@@ -239,9 +315,44 @@ for _, r in worst.iterrows():
         grid = choose_grid(K_all, n=GRID_N)
         if grid is not None:
             spline = UnivariateSpline(K_all, C_all, s=0.0)
-            pdf = implied_pdf_from_prices(spline, grid)
-            if pdf is not None and np.isfinite(pdf).all():
-                edge_mass = bl_edge_mass(grid, pdf, edge_n=EDGE_N)
+            pdf = None
+            neg_share = np.nan
+            curve_metrics = {}
+
+            if curve is not None:
+                K_all, C_all, B, K_star2 = curve
+
+                # shape sanity
+                curve_metrics = curve_sanity_metrics(K_all, C_all)
+
+                grid = choose_grid(K_all, n=GRID_N)
+                if grid is not None:
+                    spline = UnivariateSpline(K_all, C_all, s=0.0)
+                    pdf, neg_share = implied_pdf_from_prices(spline, grid)
+                    if pdf is not None and np.isfinite(pdf).all():
+                        edge_mass = bl_edge_mass(grid, pdf, edge_n=EDGE_N)
+
+                        # Common-support BL variance: restrict BL pdf to BKM-used support
+                        a = float(r["Kmin_used_put"])
+                        b = float(r["Kmax_used_call"])
+                        g2, p2 = restrict_pdf_to_interval(grid, pdf, a, b)
+                        if g2 is not None:
+                            _, var_bl_common = moments_from_pdf(g2, p2)
+                        else:
+                            var_bl_common = np.nan
+
+                        # Also compute BL variance on its own observed strike range (sanity)
+                        g3, p3 = restrict_pdf_to_interval(grid, pdf, float(r["Kmin"]), float(r["Kmax"]))
+                        if g3 is not None:
+                            _, var_bl_own = moments_from_pdf(g3, p3)
+                        else:
+                            var_bl_own = np.nan
+                    else:
+                        var_bl_common = np.nan
+                        var_bl_own = np.nan
+            else:
+                var_bl_common = np.nan
+                var_bl_own = np.nan
 
     # Lognormal “at-bound” flag
     sigma_hat = float(r["sigma_hat"])
@@ -278,12 +389,43 @@ for _, r in worst.iterrows():
         "sigma_hat_logn": sigma_hat,
         "sigma_max_logn": sigma_max,
         "sigma_at_bound_logn": bool(sigma_at_bound),
+        "neg_share_bl": float(neg_share) if np.isfinite(neg_share) else np.nan,
+        "var_bl_common_support": float(var_bl_common) if np.isfinite(var_bl_common) else np.nan,
+        "var_bl_own_support": float(var_bl_own) if np.isfinite(var_bl_own) else np.nan,
+        "mono_viol_count": int(curve_metrics.get("mono_viol_count", 0)),
+        "mono_viol_max_slope": float(curve_metrics.get("mono_viol_max_slope", 0.0)),
+        "convex_viol_count": int(curve_metrics.get("convex_viol_count", 0)),
+        "convex_viol_min_ddC": float(curve_metrics.get("convex_viol_min_ddC", 0.0)),
     })
 
 diag = pd.DataFrame(rows).sort_values("logbps_bl_bkm", key=lambda s: s.abs(), ascending=False)
 out_csv = out_dir / f"diagnostics_divergence_{AREA}.csv"
 diag.to_csv(out_csv, index=False)
 print("Saved diagnostics:", out_csv)
+
+if "var_bl_common_support" in diag.columns:
+    fig, ax = plt.subplots(figsize=(7, 4))
+
+    x = (diag["var_bl_common_support"] + eps) / (diag["var_bkm"] + eps)
+    y = (diag["var_bl"] + eps) / (diag["var_bkm"] + eps)
+
+    ax.scatter(x, y)
+    ax.plot([x.min(), x.max()], [x.min(), x.max()])  # 45-degree line
+    ax.set_title(f"BL/BKM variance ratio: full vs common-support ({AREA}) — worst {TOP_K}")
+    ax.set_xlabel("Common-support BL var / BKM var")
+    ax.set_ylabel("Full BL var / BKM var")
+    ax.grid(True, alpha=0.25)
+
+    fig.tight_layout()
+    p3 = out_dir / f"variance_ratio_full_vs_common_{AREA}.png"
+    fig.savefig(p3, dpi=200)
+    print("Saved:", p3)
+
+    if SHOW_PLOTS:
+        plt.show()
+    else:
+        plt.close(fig)
+
 
 # =======================
 # Plot 1: variance ratios vs BKM (time series)
