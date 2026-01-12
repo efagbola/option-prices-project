@@ -1,0 +1,210 @@
+\documentclass{beamer}
+\usetheme{Madrid}
+\usecolortheme{default}
+
+% --- Presentation info ---
+% IMPORTANT: Save as benchetrit_fagbola_larbi_marasco_schutt_option_prices.tex
+\title[Option-implied moments]{Recovering probability moments from inflation option prices}
+\author[Group 1]{Ethan Benchetrit, Evelyn Fagbola, Hanane Larbi, \\ Lorenzo Marasco, Eduardo Schutt}
+\institute[FTD 2025-26]{Quantitative Methods in Finance - Prof. Eric Vansteenberghe}
+\date{January 12, 2026}
+
+\begin{document}
+
+% --- Slide 1: Title ---
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% --- Slide 2: Project scope and objectives ---
+\begin{frame}{Project scope and objectives}
+    \begin{itemize}
+        \item \textbf{Dataset:} 1-year zero-coupon inflation caps, floors, and swaps (EU and US areas).
+        \item \textbf{Main goal:} Recovering implied moments (mean, variance, skewness, kurtosis) from risk-neutral distributions.
+        \item \textbf{Methodology:} Focus on identification and stability across different dates.
+        \item \textbf{Scientific boundary:} This is a recovery project, not a forecasting exercise.
+    \end{itemize}
+\end{frame}
+
+% --- Slide 3: Literature review: classification per task ---
+\begin{frame}{Literature review: classification per task}
+    \begin{enumerate}
+        \item \textbf{Task 1.3.1: Prices $\to$ PDF (Nonparametric)}
+        \begin{itemize}
+            \item Breeden-Litzenberger (1978): second derivative method ($\sim$3,315 cites).
+            \item Jackwerth-Rubinstein (1996): constrained recovery and smoothing ($\sim$1,614 cites).
+        \end{itemize}
+        \item \textbf{Task 1.3.2: PDF $\to$ moments (Analytical/Numeric)}
+        \begin{itemize}
+            \item Numerical quadrature: standard integration (trapezoidal rule).
+            \item Analytic formulas: moments for parametric families like Lognormal.
+        \end{itemize}
+        \item \textbf{Task 1.3.3: Prices $\to$ moments (Direct)}
+        \begin{itemize}
+            \item Bakshi-Kapadia-Madan (2003): direct extraction via replication ($\sim$1,858 cites).
+        \end{itemize}
+    \end{enumerate}
+\end{frame}
+
+% --- Slide 4: Data processing and quality gates ---
+\begin{frame}{Data processing and quality gates}
+    \begin{itemize}
+        \item \textbf{Scaling:} Prices divided by 100 to get price-per-1 units.
+        \item \textbf{Reference strikes:} ATM gross strike $K^*$ defined by 1y inflation swap rates.
+        \item \textbf{No-arbitrage filters:}
+        \begin{itemize}
+            \item Put-call parity residual check ($PARITY\_EPS$ gate).
+            \item Shape constraints: enforcing monotonicity and convexity.
+            \item Strike span diagnostics: checking $K_{min}$ and $K_{max}$ coverage.
+        \end{itemize}
+    \end{itemize}
+\end{frame}
+
+% --- Slide 5: Method 1: Breeden-Litzenberger (BL) ---
+% --- Slide 5: Method 1: Breeden-Litzenberger (BL) ---
+\begin{frame}{Method 1: Breeden-Litzenberger (1978) (1)}
+    \begin{block}{1. Data cleaning and quality control}
+        \begin{itemize}
+            \item \textbf{OTM selection}: Using Out-of-the-Money options to capture the most reliable information.
+            \item \textbf{Parity check}: Verifying the Put-Call parity to ensure market consistency.
+            \item \textbf{Data alignment}: Converting Floor prices into Call equivalents:
+            \item[] \centering $C = P + B(F - K)$
+        \end{itemize}
+    \end{block}
+
+    \begin{block}{2. Price curve construction}
+        \begin{itemize}
+            \item \textbf{Cubic splines}: Creating a smooth curve from discrete market points.
+            \item \textbf{Financial constraints}: 
+                \begin{itemize}
+                    \item Downward slope: Prices must decrease as the strike increases.
+                    \item Convexity: The curve must be convex to avoid arbitrage opportunities.
+                \end{itemize}
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+
+\begin{frame}{Method 1: Breeden-Litzenberger (1978) (2)}
+    \begin{block}{3. The Breeden-Litzenberger method}
+        The probability density $f(S_T)$ is calculated using the second derivative of the Call price curve:
+        \vspace{0.3cm}
+        \[ f(S_T) = e^{rT} \frac{\partial^2 C}{\partial K^2} \]
+        \vspace{0.2cm}
+        \textit{Concept}: The curvature of the price curve reveals the market's inflation expectations.
+    \end{block}
+
+    \begin{block}{4. Market insights}
+        \begin{itemize}
+            \item \textbf{Skewness}: Measures if the market fears high inflation (right side) or low inflation (left side).
+            \item \textbf{Kurtosis}: Indicates the risk of extreme economic shocks (fat tails).
+            \item \textbf{Validation}: The total sum of probabilities must be equal to 1.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+% --- Slide 6: Method 2: Direct BKM extraction ---
+% --- Slide 6: Method 2: Direct BKM extraction ---
+\begin{frame}{Method 2 : Bakshi-Kapadia-Madan (2003)}
+    \begin{block}{1. From Discrete Prices to Moments}
+        The BKM method uses \textbf{Numerical Integration} (Trapezoidal rule) to recover moments directly:
+        \[ m_n = K_0^n + \int_{0}^{K_0} g''(K) P(K) dK + \int_{K_0}^{\infty} g''(K) C(K) dK \]
+        \begin{itemize}
+            \item \textbf{$g''(K)$}: Quadrature weights (2, $6K$, or $12K^2$).
+            \item \textbf{$P(K), C(K)$}: Undiscounted Put and Call prices.
+        \end{itemize}
+    \end{block}
+
+    \begin{block}{2. Numerical Illustration}
+        Example for a Call at $K = 1.05$ (Price = $0.001$):
+        \begin{itemize}
+            \item \textbf{Variance contribution}: $0.001 \times 2 = 0.002$.
+            \item \textbf{Kurtosis contribution}: $0.001 \times (12 \times 1.05^2) \approx 0.013$.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+% --- Slide 7: Parametric benchmarks ---
+\begin{frame}{Parametric Benchmarks \& Model Validation}
+
+    \begin{block}{Lognormal Calibration}
+        \begin{itemize}
+            \item \textbf{Methodology:} Fitting $(\mu, \sigma)$ to Out-of-the-Money (OTM) caps and floors by minimizing pricing RMSE.
+            \item \textbf{Martingale constraint:} Use of a penalty anchor to ensure the mean is consistent with the \textbf{forward swap rate} ($K^*$).
+            \item \textbf{Tail stability:} Preferred for variance recovery in sparse-strike environments as it provides structural regularization for the tails.
+        \end{itemize}
+    \end{block}
+
+    \vfill
+
+    \begin{block}{Normal Fit}
+        \begin{itemize}
+            \item \textbf{Process:} Gaussian fit performed on the density proxy recovered via the Breeden-Litzenberger (BL) method.
+            \item \textbf{Role:} Strictly diagnostic; helps identify \textbf{truncation bias} and sensitivity to boundary-mass thresholds.
+            \item \textbf{Limitations:} Used to flag positivity mismatches and artifacts caused by limited strike ranges.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+% --- Slide 8: Empirical results: implied mean ---
+\begin{frame}{Empirical results: implied mean (1st moment)}
+    \begin{itemize}
+        \item \textbf{Method convergence:} High agreement across BL, BKM, and Lognormal.
+        \item \textbf{Identification:} Results are strongly anchored by liquid ATM info and swap rates.
+    \end{itemize}
+    \begin{center}
+        \includegraphics[width=0.9\textwidth]{mean_comparison_EU.png}
+    \end{center}
+\end{frame}
+
+% --- Slide 9: Empirical results: implied variance ---
+\begin{frame}{Empirical results: implied variance (2nd moment)}
+    \begin{itemize}
+        \item \textbf{Divergence diagnosis:} Gaps appear when strike coverage is limited.
+        \item \textbf{BKM bias:} Downward bias due to missing far-OTM strikes in the tails.
+        \item \textbf{Context:} Methods tend to converge during high-liquidity stress events.
+    \end{itemize}
+    \begin{center}
+        \includegraphics[width=0.9\textwidth]{variance_comparison_EU.png}
+    \end{center}
+\end{frame}
+
+% --- Slide 10: Skewness, kurtosis, and stability ---
+\begin{frame}{Skewness, kurtosis, and stability}
+    \begin{itemize}
+        \item \textbf{Instability factors:} High sensitivity to tail balance and sparse quotes.
+        \item \textbf{Kurtosis behavior:} Most volatile moment; depends heavily on extreme strikes.
+        \item \textbf{Our take:} Higher moments serve as qualitative risk indicators rather than exact levels.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Diagnostic findings on variance gaps}
+    \footnotesize
+    \begin{itemize}
+        \item \textbf{Large variance gaps:} BL variance is often 2--5.7$\times$ higher than BKM on the EU sample.
+        \item \textbf{Edge-mass analysis:} divergences are not explained by boundary issues; BL density is not boundary-dominated on worst dates.
+        \item \textbf{Parity consistency:} overlapping-strike residuals remain very small ($10^{-4}$ to $10^{-3}$) during these divergence periods.
+        \item \textbf{Strike centrality:} $K^*$ remains well-positioned near the center (~0.38--0.57), not at the edges of the strike range.
+        \item \textbf{Model parameters:} lognormal $\sigma$ bounds are not binding on the dates with the largest gaps.
+        \item \textbf{Common-support impact:} gaps between BL and BKM remain high even when the comparison is restricted to overlapping strikes.
+    \end{itemize}
+    \begin{figure}
+    \centering
+    \includegraphics[width=0.6\linewidth]{image.png}
+    \label{fig:placeholder}
+\end{figure}
+\end{frame}
+
+% --- Slide 11: Final conclusion and takeaways ---
+\begin{frame}{Final conclusion and takeaways}
+    \begin{itemize}
+        \item \textbf{Mean:} Robust identification across methods using swap anchoring.
+        \item \textbf{Variance:} Tail-regularized methods (Lognormal/Smoothed BL) are better for sparse data.
+        \item \textbf{Direct BKM:} Best interpreted as a lower-bound for variance in illiquid periods.
+        \item \textbf{Final word:} Careful strike-span monitoring is essential for reliable moment recovery.
+    \end{itemize}
+\end{frame}
+
+\end{document}
+
+

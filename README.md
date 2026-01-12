@@ -3,6 +3,7 @@
 This repository implements and compares alternative methodologies to extract **option-implied moments of the inflation distribution** from cap and floor prices.
 
 The project is structured to allow the supervisor to directly inspect:
+
 1. The implemented **methodologies (code)**
 2. The resulting **moment estimates (CSV outputs)**
 3. The **comparative analysis (plots)**
@@ -14,12 +15,14 @@ The emphasis is on **methodological replication and comparison**, not forecastin
 ## Data Description
 
 The data consist of:
+
 - Inflation caps
 - Inflation floors
 - Inflation swaps
 
 Caps and floors are used to infer information about the risk-neutral distribution of future inflation.  
 Swaps provide:
+
 - Discount factors
 - A proxy for the forward (risk-neutral) mean inflation rate
 
@@ -36,6 +39,7 @@ The project implements four classes of methods commonly used in the literature t
 This approach recovers the full risk-neutral density implied by option prices.
 
 Steps:
+
 - Construct a price curve across strikes
 - Smooth prices using spline interpolation
 - Apply the Breeden–Litzenberger identity (second derivative)
@@ -44,6 +48,7 @@ Steps:
 This method is flexible but sensitive to smoothing and data quality.
 
 **Output**
+
 - `moments_main.csv`
 
 ---
@@ -53,12 +58,14 @@ This method is flexible but sensitive to smoothing and data quality.
 This approach assumes the inflation distribution is Normal.
 
 Steps:
+
 - Estimate mean and variance parameters
 - Compute implied moments analytically
 
 This method is simple and stable but imposes strong distributional assumptions.
 
 **Output**
+
 - `moments_parametric_normal.csv`
 
 ---
@@ -68,13 +75,15 @@ This method is simple and stable but imposes strong distributional assumptions.
 This approach assumes a Lognormal inflation distribution.
 
 Steps:
+
 - Estimate parameters in log-space
 - Recover analytical expressions for moments
 
 This method allows for skewness but restricts the shape of the distribution.
 
 **Output**
-- `moments_parametric_lognormal.csv`
+
+- `method_parametric_lognormal.csv`
 
 ---
 
@@ -83,6 +92,7 @@ This method allows for skewness but restricts the shape of the distribution.
 This approach follows the logic of Bakshi, Kapadia, and Madan (2003).
 
 Steps:
+
 - Use static replication formulas
 - Recover raw moments directly from option prices
 - Convert raw moments into central moments
@@ -90,6 +100,7 @@ Steps:
 This method avoids explicit density estimation.
 
 **Output**
+
 - `moments_direct_bkm.csv`
 
 ---
@@ -133,3 +144,4 @@ option-prices-project/
 │   └── variance_comparison_EU.png
 │
 └── README.md
+```
