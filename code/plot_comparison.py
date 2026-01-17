@@ -105,31 +105,51 @@ def run_plot():
         raise RuntimeError("Intersection sample is empty — cannot plot.")
 
     # =======================
-    # MEAN PLOT
+    # MEAN PLOT (Inflation rate in %)
     # =======================
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    ax.plot(df["date"], df["mean_bl"],   label="Nonparametric (BL)", linewidth=2, zorder=2)
-    ax.plot(df["date"], df["mean_logn"], label="Parametric Lognormal", linewidth=3, zorder=2)
-    ax.plot(df["date"], df["mean_norm"], label="Parametric Normal", linewidth=2, alpha=0.6, zorder=1)
+    def to_inflation_pct(s: pd.Series) -> pd.Series:
+        # mean is stored as gross index ratio X = 1 + pi (for 1Y), convert to % inflation
+        return 100.0 * (pd.to_numeric(s, errors="coerce") - 1.0)
 
-    ax.plot(
-        df["date"], df["mean_bkm"],
-        label="Direct (BKM)",
-        linewidth=4,
-        linestyle="--",
-        marker="o",
-        markersize=5,
-        markeredgewidth=1.5,
-        markeredgecolor="black",
-        zorder=10,
-    )
+    # Build plotting series WITHOUT overwriting df (so later bps-diff plots remain correct)
+    s_bl = to_inflation_pct(df["mean_bl"]) if "mean_bl" in df.columns else None
+    s_logn = to_inflation_pct(df["mean_logn"]) if "mean_logn" in df.columns else None
+    s_norm = to_inflation_pct(df["mean_norm"]) if "mean_norm" in df.columns else None
+    s_bkm = to_inflation_pct(df["mean_bkm"]) if "mean_bkm" in df.columns else None
 
-    ax.set_title(f"Implied Mean Inflation Index ({AREA}) — intersection sample")
+    # Plot other methods first
+    if s_bl is not None:
+        ax.plot(df["date"], s_bl, label="Nonparametric (BL)", linewidth=2, zorder=2)
+
+    if s_logn is not None:
+        ax.plot(df["date"], s_logn, label="Parametric Lognormal", linewidth=3, zorder=2)
+
+    if s_norm is not None:
+        ax.plot(df["date"], s_norm, label="Parametric Normal", linewidth=2, alpha=0.6, zorder=1)
+
+    # Plot BKM last + strong styling
+    if s_bkm is not None:
+        ax.plot(
+            df["date"], s_bkm,
+            label="Direct (BKM)",
+            linewidth=4,
+            linestyle="--",
+            marker="o",
+            markersize=5,
+            markeredgewidth=1.5,
+            markeredgecolor="black",
+            zorder=10,
+        )
+
+    ax.set_title(f"Implied Mean Inflation ({AREA}) — intersection sample")
+    ax.set_ylabel("Percent (%)")
     ax.grid(True, alpha=0.25)
     ax.legend()
 
-    set_robust_ylim(ax, [df["mean_bkm"], df["mean_bl"], df["mean_logn"], df["mean_norm"]])
+
+    ax.set_ylim(0.5, 5.0)
 
     fig.tight_layout()
     fig.savefig(out_dir / f"mean_comparison_{AREA}.png", dpi=200)
