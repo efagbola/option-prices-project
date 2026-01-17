@@ -153,9 +153,31 @@
         \item \textbf{Identification:} Results are strongly anchored by liquid ATM info and swap rates.
     \end{itemize}
     \begin{center}
-        \includegraphics[width=0.9\textwidth]{mean_comparison_EU.png}
+        \includegraphics[width=0.9\textwidth]{mean_comparison_EU.jpeg}
     \end{center}
 \end{frame}
+
+
+\begin{frame}{Why implied inflation may be below the swap forward}
+    \begin{itemize}
+        \item \textbf{Insufficient strike coverage:} A lack of Out-of-the-Money (OTM) caps above $K_{\star}$ means the right tail of the distribution is weakly identified, particularly during the 2021-2022 inflation surge.
+        
+        \item \textbf{Right-tail truncation bias:} When the forward rate $K^{\star}$ approaches or exceeds the maximum observed strike $K_{\max}$, the density is effectively \textbf{truncated on the right}. This missing mass mechanically pulls the calculated mean downward.
+        
+        \item \textbf{Smoothing and regularization effects:} 
+        \begin{itemize}
+            \item Cubic spline fitting and the clipping of negative densities can \textbf{compress the tails}.
+            \item Normalization of the PDF to sum to 1 may redistribute mass away from the extreme right.
+        \end{itemize}
+        
+        \item \textbf{Cross-market inconsistency:} 
+        \begin{itemize}
+            \item Caps/floors and inflation swaps may not be perfectly aligned due to \textbf{liquidity differentials} and bid-ask spreads.
+            \item Quote timing noise: Asynchrony between swap markets and option surfaces can lead to imperfect parity anchoring.
+        \end{itemize}
+    \end{itemize}
+\end{frame}
+
 
 % --- Slide 9: Empirical results: implied variance ---
 \begin{frame}{Empirical results: implied variance (2nd moment)}
